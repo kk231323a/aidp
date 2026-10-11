@@ -2,7 +2,8 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/hm-dianping.iml" filepath="$PROJECT_DIR$/.idea/hm-dianping.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/aidianping.iml" filepath="$PROJECT_DIR$/.idea/aidianping.iml" />
+      <module fileurl="file://$PROJECT_DIR$/aidp/aidp.iml" filepath="$PROJECT_DIR$/aidp/aidp.iml" />
     </modules>
   </component>
 </project>
