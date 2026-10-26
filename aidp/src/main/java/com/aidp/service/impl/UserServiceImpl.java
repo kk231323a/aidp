@@ -96,6 +96,36 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         return Result.ok(token);
     }
 
+    @Override
+    public Result queryUserById(Long userId) {
+        if (userId == null || userId <= 0) {
+            return Result.fail("用户id不正确");
+        }
+
+        User user = lambdaQuery()
+                .select(User::getId, User::getNickName, User::getIcon)
+                .eq(User::getId, userId)
+                .one();
+        if (user == null) {
+            return Result.fail("用户不存在");
+        }
+
+        return Result.ok(BeanUtil.copyProperties(user, UserDTO.class));
+    }
+
+    @Override
+    public Result logout(String token) {
+        if (token == null || token.trim().isEmpty()) {//调用 trim() 方法去掉字符串两端的空格后，检查字符串是否为空
+            return Result.ok();
+        }
+
+        Boolean removed = stringRedisTemplate.delete(LOGIN_USER_KEY + token);
+        if (removed == null || !removed) {
+            return Result.fail("用户登出失败");
+        }
+        return Result.ok("用户登出成功");
+    }
+
     private User createUserWithPhone(String phone) {
         User user = new User();
         user.setPhone(phone);

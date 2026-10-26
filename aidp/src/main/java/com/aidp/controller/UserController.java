@@ -47,12 +47,12 @@ public class UserController {
 
     /**
      * 登出功能
-     * @return 无
+     * @return 登出结果
      */
     @PostMapping("/logout")
-    public Result logout(){
-        // TODO 实现登出功能
-        return Result.fail("功能未完成");
+    public Result logout(
+            @RequestHeader(value = "authorization", required = false) String token) {
+        return userService.logout(token);
     }
 
     @GetMapping("/me")
@@ -61,6 +61,11 @@ public class UserController {
         UserDTO user = UserHolder.getUser();
 
         return Result.ok(user);
+    }
+
+    @GetMapping("/{id}")
+    public Result queryUserById(@PathVariable("id") Long userId) {
+        return userService.queryUserById(userId);
     }
 
     @GetMapping("/info/{id}")
