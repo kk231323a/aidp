@@ -10,6 +10,7 @@ import com.aidp.utils.RedisIdWorker;
 import com.aidp.utils.UserHolder;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.aop.framework.AopContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ClassPathResource;
@@ -36,6 +37,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Autowired
     private RedissonClient redissonClient;
+
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
 
     static {
@@ -44,30 +48,34 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         SECKILL_SCRIPT.setResultType(Long.class);
     }
 
-    private BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
-    private static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
+//    private BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
+//    private static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
 
-    @PostConstruct
-    private void init() {
-        SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
-    }
 
-    private class VoucherOrderHandler implements Runnable {
-        @Override
-        public void run() {
-            while (true) {
-//               1.获取队列中的订单信息
-                try {
-                    VoucherOrder voucherOrder = orderTasks.take();
-//                    2.创建订单
-                    handleVoucherOrder(voucherOrder);
-                } catch (InterruptedException e) {
-                    log.error("处理订单异常", e);
-                }
+//    线程池初始化方法，让线程监听阻塞队列用，现已使用rabbitmq实现异步下单，故关闭
 
-            }
-        }
-    }
+
+//    @PostConstruct
+//    private void init() {
+//        SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
+//    }
+
+//    private class VoucherOrderHandler implements Runnable {
+//        @Override
+//        public void run() {
+//            while (true) {
+////               1.获取队列中的订单信息
+//                try {
+//                    VoucherOrder voucherOrder = orderTasks.take();
+////                    2.创建订单
+//                    handleVoucherOrder(voucherOrder);
+//                } catch (InterruptedException e) {
+//                    log.error("处理订单异常", e);
+//                }
+//
+//            }
+//        }
+//    }
 //    @Override
 //    public Result seckillVoucher(Long voucherId) {//串行下单
 //        //1.查询优惠券
@@ -112,7 +120,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         //        5.一人一单
         Long userId = voucherOrder.getUserId();
 //        5.1查询订单
-        int count = query().eq("user_id", userId).eq("voucher_id", voucherOrder).count();
+        int count = query().eq("user_id", userId).eq("voucher_id", voucherOrder.getVoucherId()).count();
 //        5.2判断是否存在
         if (count > 0) {
             log.error("用户已经购买过一次");
@@ -122,7 +130,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 //        6.扣减库存
         boolean success = seckillVoucherService.update()
                 .setSql("stock = stock - 1")
-                .eq("voucher_id", voucherOrder).gt("stock", 0)//通过加乐观锁判断库存是否足够来防止超卖
+                .eq("voucher_id", voucherOrder.getVoucherId()).gt("stock", 0)//通过加乐观锁判断库存是否足够来防止超卖
                 .update();
         if (!success) {
             log.error("库存不足");
@@ -160,21 +168,21 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             voucherOrder.setUserId(UserHolder.getUser().getId());
             //    获取代理对象（事务）
             proxy = (IVoucherOrderService) AopContext.currentProxy();//防止事务失效
-//       2.4 保存到阻塞队列
-            try {
-                orderTasks.put(voucherOrder);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
-
-
+//       2.4 保存到消息队列
+            sendVoucherOrderQueue(voucherOrder);
 //       3.返回订单id
             return Result.ok(voucherOrder.getId());
         }
+    public void sendVoucherOrderQueue(VoucherOrder voucherOrder) {
+        String queueName = "order.queue";
+        rabbitTemplate.convertAndSend(queueName, voucherOrder);
+    }
 
 
 
-    private void handleVoucherOrder(VoucherOrder voucherOrder) {
+
+
+    public void handleVoucherOrder(VoucherOrder voucherOrder) {
         Long userId = voucherOrder.getUserId();
 //        创建锁对象
         RLock lock = redissonClient.getLock("lock:order:" + userId);
