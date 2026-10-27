@@ -10,6 +10,7 @@ spring:
     listener:
       simple:
         prefetch: 1
+        acknowledge-mode: manual
   application:
     name: aidp
   datasource:

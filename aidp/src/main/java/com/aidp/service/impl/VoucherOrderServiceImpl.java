@@ -137,8 +137,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return ;
         }
         save(voucherOrder);
-//        7.返回订单id
-
 
     }
         private IVoucherOrderService proxy;
@@ -163,11 +161,11 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 //       2.2为0，有购买资格，把下单信息保存到阻塞队列中
 //       2.3创建订单
             VoucherOrder voucherOrder = new VoucherOrder();
+
             voucherOrder.setId(redisIdWorker.nextId("order"));
             voucherOrder.setVoucherId(voucherId);
             voucherOrder.setUserId(UserHolder.getUser().getId());
-            //    获取代理对象（事务）
-            proxy = (IVoucherOrderService) AopContext.currentProxy();//防止事务失效
+
 //       2.4 保存到消息队列
             sendVoucherOrderQueue(voucherOrder);
 //       3.返回订单id
@@ -195,6 +193,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return;
         }
         try {
+            //    获取代理对象（事务）
+            proxy = (IVoucherOrderService) AopContext.currentProxy();//防止事务失效
             proxy.createVoucherOrder(voucherOrder);
         } finally {
 //            释放锁
