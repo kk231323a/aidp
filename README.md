@@ -1,6 +1,6 @@
 # 爱点评（aidp）
 
-爱点评是一个本地生活点评平台，后端使用 Spring Boot + MyBatis-Plus + MySQL + Redis 独立开发。
+爱点评是一个本地生活点评平台，后端使用 Spring Boot + MyBatis-Plus + MySQL + Redis + RabbitMQ 独立开发。
 
 项目业务本身不复杂（店铺、优惠券、秒杀下单），写它主要是为了把 **后端高并发处理** 和 **Redis 的深度使用** 落到真实业务链路上：缓存穿透 / 击穿、缓存一致性、分布式锁、异步秒杀、全局唯一 ID，每一项都有对应的代码实现和压测场景。
 
@@ -14,16 +14,17 @@
 | 框架 | Spring Boot 2.3.12、Spring MVC、AspectJ |
 | 持久层 | MyBatis-Plus 3.4.3、MySQL（mysql-connector-java 5.1.47） |
 | 缓存 / 中间件 | Redis、Spring Data Redis（Lettuce + commons-pool2）、Redisson 3.13.6 |
-| 工具库 | Hutool 5.7.17、Lombok |
+| 消息队列 | RabbitMQ 3、Spring AMQP（`RabbitTemplate` + `@RabbitListener`） |
+| 工具库 | Hutool 5.7.17、Lombok、Jackson（AMQP JSON 序列化） |
 | 构建 | Maven |
 
 ## 功能模块
 
-- **用户**：手机号验证码登录（Redis 令牌）、登录状态刷新、用户信息查询
+- **用户**：手机号验证码登录（Redis 令牌）、登录状态刷新、用户信息查询、登出
 - **店铺**：店铺详情查询、按类型 / 名称分页查询、店铺信息更新（缓存）
 - **店铺类型**：类型列表查询（缓存）
 - **优惠券**：普通券 / 秒杀券添加、按店铺查询券列表
-- **秒杀下单**：Lua 脚本预校验 + 阻塞队列异步下单 + 一人一单
+- **秒杀下单**：Lua 脚本预校验 + RabbitMQ 异步下单 + 手动 ack + 一人一单
 
 ## 目录结构
 
@@ -34,8 +35,9 @@ aidianping/
 │   └── src/
 │       ├── main/java/com/aidp/
 │       │   ├── AiDianPingApplication.java
-│       │   ├── config/                  # MVC / MyBatis-Plus / Redisson / 全局异常
+│       │   ├── config/                  # MVC / MyBatis-Plus / Redisson / RabbitMQ / Jackson / 全局异常
 │       │   ├── controller/              # 对外 HTTP 接口
+│       │   ├── listener/                # RabbitMQ 消费者（手动 ack）
 │       │   ├── dto/                     # Result、LoginFormDTO、UserDTO、ScrollResult
 │       │   ├── entity/                  # 与数据表对应的实体
 │       │   ├── mapper/                  # MyBatis-Plus Mapper
@@ -49,8 +51,8 @@ aidianping/
 │       │   ├── unLock.lua               # 分布式锁解锁脚本
 │       │   └── nginx-1.18.0/            # 前端页面 + Nginx（conf / html / logs）
 │       └── test/java/com/aidp/          # 单元测试（唯一 ID、逻辑过期）
-├── jmeter-plans/                        # JMeter 压测计划（预留）
-└── temp/                                # JMeter 图表输出
+├── jmeter-plans/                        # JMeter 压测计划（秒杀 / 缓存 / 直查）
+└── temp/                                # 压测输出与临时脚本
 ```
 
 ## 快速开始
@@ -61,7 +63,14 @@ aidianping/
 - Maven 3.6+
 - MySQL 5.7+（脚本源自 MySQL 5.6，8.x 也能用）
 - Redis 5+，默认端口 6379
+- RabbitMQ 3.x，默认端口 5672（管理台 15672）
 - Nginx：仓库已内置 Windows 版，不需要单独安装
+
+启动前先确保 RabbitMQ 在运行。`order.queue` 由 `RabbitMQConfig` 中的 `Queue` Bean 自动声明为 durable，不需要手工创建：
+
+```bash
+docker run -d --name aidp-rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
+```
 
 ### 2. 初始化数据库
 
@@ -75,6 +84,11 @@ aidianping/
 server:
   port: 8081          # 服务端口
 spring:
+  rabbitmq:
+    host: 127.0.0.1
+    port: 5672
+    username: guest
+    password: guest
   datasource:
     url: jdbc:mysql://127.0.0.1:3306/aidp?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
     username: root
@@ -136,7 +150,8 @@ authorization: <login 接口返回的 token>
 | POST | `/user/login` | 验证码登录，返回 token（免登录） |
 | GET | `/user/me` | 当前登录用户 |
 | GET | `/user/info/{id}` | 用户详情 |
-| POST | `/user/logout` | 登出（未实现） |
+| GET | `/user/{id}` | 按 ID 查询用户（昵称、头像） |
+| POST | `/user/logout` | 登出（删除 Redis 中的 token） |
 
 ### 店铺 `/shop`
 
@@ -226,24 +241,50 @@ return 0
 
 ### 优惠券秒杀
 
-下单链路为「**Redis 预校验 → 队列削峰 → 异步落库**」：
+下单链路为「**Redis 预校验 → RabbitMQ 削峰 → 异步落库**」：
 
 1. 请求进入 `VoucherOrderServiceImpl.seckillVoucher`，执行 `seckill.lua`。
 2. 脚本在 Redis 内原子完成：库存是否充足 → 用户是否已下单 → 扣库存 → 记录用户，返回 `0/1/2`。
-3. 通过校验后生成订单 ID，把订单放进 `ArrayBlockingQueue`，接口立即返回订单 ID。
-4. `@PostConstruct` 启动的单线程消费者从队列取任务，用 Redisson 按用户加锁，再在事务内做「一人一单校验 + 乐观锁扣库存 + 保存订单」。
+3. 通过校验后生成订单 ID，由 `RabbitTemplate` 投递到 `order.queue`，接口立即返回订单 ID（受理结果）。
+4. `@RabbitListener` 以 `prefetch=1` 串行消费，消息体使用 JSON 序列化（`Jackson2JsonMessageConverter`）。
+5. 消费端按 `userId` 加 Redisson 锁，在事务内做「一人一单校验 + `stock > 0` 条件更新 + 保存订单」。
+6. ack 模式为手动：事务提交后 `basicAck`；处理异常时 `basicNack(requeue=true)`。
 
-此外演示了全流程的演进：乐观锁扣库存 → 悲观锁一人一单 → Redis 分布式锁 → Lua 原子解锁 → Redisson → 阻塞队列异步下单，每一步都对应一次提交记录，适合按 git 历史逐步阅读。
+队列由 `RabbitMQConfig` 声明，应用启动时自动创建（durable）。
+
+此外演示了全流程的演进：乐观锁扣库存 → 悲观锁一人一单 → Redis 分布式锁 → Lua 原子解锁 → Redisson → 阻塞队列 → RabbitMQ 异步下单，每一步都对应一次提交记录，适合按 git 历史逐步阅读。
 
 ### 全局唯一 ID
 
 `utils/RedisIdWorker.java` 采用「时间戳（相对 2022-01-01 的秒数，左移 32 位）+ Redis 每日自增序列」拼出 64 位 ID：全局唯一、趋势递增、不暴露业务量级。
 
+## 压测结果
+
+环境：单机 16 逻辑核，JMeter 5.4.1 直连 `127.0.0.1:8081`，JMeter、服务、MySQL、Redis、RabbitMQ 同机；100 并发，ramp=0，keep-alive 开启。
+
+| 场景 | 请求数 | 吞吐 | 平均 | P99 | 错误率 |
+| --- | --- | --- | --- | --- | --- |
+| 秒杀下单（10 并发） | 1,000 | 996 req/s | 8.5 ms | 52 ms | 0% |
+| 秒杀下单（100 并发） | 4,000 | 1,800~2,400 req/s | 37~50 ms | 114~185 ms | 0% |
+| 秒杀下单（200 并发） | 4,000 | 1,292~2,211 req/s | 77~144 ms | 194~522 ms | 1.68%~2.13%（TCP 连接被拒） |
+| 限量抢购（库存 200 / 1,000 人） | 1,000 | — | — | — | 成功 200 / 拒绝 800 |
+
+- 消费端落库约 **176 单/s**（单消费者、prefetch=1）
+- 限量场景 Redis 与 MySQL 均为 200 单、200 个用户，0 超卖、0 重复
+- 200 并发时的失败全部是 Tomcat accept backlog 打满导致的连接拒绝，不是业务报错
+
+> 口径说明：单机同机压测，仅用于验证方案有效性，不代表生产环境容量。
+
 ## 已知未完成项
 
 阅读代码时会遇到以下几处，属于项目当前状态而非缺陷：
 
-- `/user/logout` 未实现
+- 预扣与落库不在同一事务：落库失败时缺少库存回补与定时对账
+- 没有 publisher confirm；`basicNack(requeue=true)` 没有重试上限和死信队列
+- 秒杀开始 / 结束时间未在异步链路中校验
+- Redis 重启后缺少库存与已购集合的预热逻辑
+- 没有支付、取消、超时关单，库存扣减后不会自动释放
+- 单消费者，消费能力（约 176 单/s）明显低于接口吞吐
 - `BlogController.likeBlog` 仅累加 `liked` 字段，尚未用 Redis ZSet 实现「一人一赞」与点赞排行榜
 - `FollowController`、`BlogCommentsController` 为空实现，关注、Feed 流、评论功能未开发
 - 未使用的预留 Redis Key：`blog:liked:`、`feed:`、`shop:geo:`、`sign:`
