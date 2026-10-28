@@ -75,45 +75,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 //
 //            }
 //        }
-//    }
-//    @Override
-//    public Result seckillVoucher(Long voucherId) {//串行下单
-//        //1.查询优惠券
-//        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
-////        2.判断秒杀是否开始
-//        if (voucher.getBeginTime().isAfter(LocalDateTime.now())) {
-//            return Result.fail("秒杀尚未开始");
-//        }
-//
-////        3.判断秒杀是否结束
-//        if (!voucher.getEndTime().isAfter(LocalDateTime.now())) {
-//            return Result.fail("秒杀已经结束");
-//        }
-////        4.判断库存是否充足
-//        if (voucher.getStock() < 1) {
-//            return Result.fail("库存不足");
-//        }
-//        Long userId = UserHolder.getUser().getId();
-////       创建锁对象
-////        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
-//        RLock lock = redissonClient.getLock("lock:order:" + userId);
-//
-//        boolean tryLock = lock.tryLock();
-////        判断是否获取成功
-//        if (!tryLock) {
-////            获取锁失败返回错误或重试
-//            return Result.fail("不允许重复下单");
-//        }
-//        try {
-////    获取代理对象（事务）
-//            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();//防止事务失效
-//            return proxy.createVoucherOrder(voucherId);
-//        } finally {
-////            释放锁
-//            lock.unlock();
-//        }
-//
-//    }
+
 
     @Transactional
     public void createVoucherOrder(VoucherOrder voucherOrder) {//提取下单方法，用分布式锁实现一人只能下一单
@@ -158,10 +120,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 return Result.fail(r == 1 ? "库存不足" : "不能重复下单");
 
             }
-//       2.2为0，有购买资格，把下单信息保存到阻塞队列中
+//       2.2为0，有购买资格，把下单信息保存到消息队列中
 //       2.3创建订单
             VoucherOrder voucherOrder = new VoucherOrder();
-
             voucherOrder.setId(redisIdWorker.nextId("order"));
             voucherOrder.setVoucherId(voucherId);
             voucherOrder.setUserId(UserHolder.getUser().getId());
@@ -173,7 +134,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
     public void sendVoucherOrderQueue(VoucherOrder voucherOrder) {
         String queueName = "order.queue";
-        rabbitTemplate.convertAndSend(queueName, voucherOrder);
+        rabbitTemplate.convertAndSend(queueName, voucherOrder);//消息发出后在listener包内处理
     }
 
 
