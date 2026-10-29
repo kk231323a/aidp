@@ -35,6 +35,27 @@ public class BlogController {
         return Result.ok(blog.getId());
     }
 
+    @GetMapping("/{id}")
+    public Result queryBlogById(@PathVariable("id") Long id) {
+        if (id == null || id <= 0) {
+            return Result.fail("博文id不正确");
+        }
+
+        Blog blog = blogService.getById(id);
+        if (blog == null) {
+            return Result.fail("博文不存在");
+        }
+
+        User user = userService.getById(blog.getUserId());
+        if (user != null) {
+            blog.setName(user.getNickName());
+            blog.setIcon(user.getIcon());
+        }
+        // 当前尚未实现用户点赞记录，先返回未点赞状态
+        blog.setIsLike(false);
+        return Result.ok(blog);
+    }
+
     @PutMapping("/like/{id}")
     public Result likeBlog(@PathVariable("id") Long id) {
         // 修改点赞数量

@@ -174,6 +174,7 @@ authorization: <login 接口返回的 token>
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/blog` | 发布探店博文 |
+| GET | `/blog/{id}` | 博文详情，包含作者昵称和头像 |
 | PUT | `/blog/like/{id}` | 博文点赞 |
 | GET | `/blog/of/me?current=` | 我的博文 |
 | GET | `/blog/hot?current=` | 热门博文，按点赞数倒序 |
